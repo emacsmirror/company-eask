@@ -32,6 +32,7 @@
 ;;; Code:
 
 (require 'cl-lib)
+(require 'finder)
 
 (require 'company)
 (require 'eask-core)
@@ -42,47 +43,20 @@
   :group 'tool
   :link '(url-link :tag "Repository" "https://github.com/emacs-eask/company-eask"))
 
-;;
-;; (@* "Prefix" )
-;;
+(defvar company-eask--sources (mapcar (lambda (source)
+                                        (eask-2str (car source)))
+                                      eask-source-mapping)
+  "A list of sources.")
 
-;; NOTE: Copied from company-elisp
+(defvar company-eask--packages (mapcar (lambda (source)
+                                         (eask-2str (car source)))
+                                       package-alist)
+  "A list of packages.")
 
-(defvar company-eask-defun-names '("defun" "defmacro" "defsubst"))
-
-(defun company-eask--fns-regexp (&rest names)
-  (concat "\\_<\\(?:cl-\\)?" (regexp-opt names) "\\*?\\_>"))
-
-(defvar company-eask-defuns-regexp
-  (concat "([ \t\n]*"
-          (apply #'company-eask--fns-regexp company-eask-defun-names)))
-
-(defun company-eask--should-complete ()
-  (let ((start (point))
-        (depth (car (syntax-ppss))))
-    (not
-     (when (> depth 0)
-       (save-excursion
-         (up-list (- depth))
-         (when (looking-at-p company-eask-defuns-regexp)
-           (forward-char)
-           (forward-sexp 1)
-           (unless (= (point) start)
-             (condition-case nil
-                 (let ((args-end (scan-sexps (point) 2)))
-                   (or (null args-end)
-                       (> args-end start)))
-               (scan-error
-                t)))))))))
-
-(defun company-eask--prefix ()
-  (let ((prefix (company-grab-symbol)))
-    (if prefix
-        (when (if (company-in-string-or-comment)
-                  (= (char-before (- (point) (length prefix))) ?`)
-                (company-eask--should-complete))
-          prefix)
-      'stop)))
+(defvar company-eask--keywords (mapcar (lambda (source)
+                                         (eask-2str (car source)))
+                                       finder-known-keywords)
+  "A list of keywords.")
 
 ;;
 ;; (@* "Core" )
@@ -103,21 +77,47 @@
 
 (defun company-eask--candidates ()
   "Return a list of candidates."
-  eask-file-keywords)
+  (if (company-in-string-or-comment)
+      (append company-eask--sources
+              company-eask--keywords
+              company-eask--packages)
+    (append company-eask--sources
+            eask-file-keywords)))
 
-(defun company-eask--annotation (_candidate)
+(defun company-eask--annotation (candidate)
   "Return annotation for CANDIDATE."
-  "(Directive)")
+  (cond ((member candidate eask-file-keywords)
+         "(Directive)")
+        ((member candidate company-eask--sources)
+         "(Source)")
+        ((member candidate company-eask--keywords)
+         "(Keyword)")
+        ((member candidate company-eask--packages)
+         "(Package)")))
 
 (defun company-eask--doc-buffer (candidate)
   "Return document for CANDIDATE."
-  (let ((symbol (intern (format "eask-f-%s" candidate))))
-    (save-window-excursion
-      (ignore-errors
-        (cond
-         ((fboundp symbol) (describe-function symbol))
-         (t (signal 'user-error nil)))
-        (company-doc-buffer (company-eask--improve-doc symbol))))))
+  (let ((cand (intern candidate)))
+    (cond
+     ;; (Directive)
+     ((member candidate eask-file-keywords)
+      (let ((symbol (intern (format "eask-f-%s" candidate))))
+        (save-window-excursion
+          (ignore-errors
+            (cond
+             ((fboundp symbol) (describe-function symbol))
+             (t (signal 'user-error nil)))
+            (company-doc-buffer (company-eask--improve-doc symbol))))))
+     ;; (Source)
+     ((member candidate company-eask--sources)
+      (company-doc-buffer (alist-get cand eask-source-mapping)))
+     ;; (Keyword)
+     ((member candidate company-eask--keywords)
+      (company-doc-buffer (alist-get cand finder-known-keywords)))
+     ;; (Package)
+     ((member candidate company-eask--packages)
+      (when-let* ((desc (car (alist-get cand package-alist))))
+        (company-doc-buffer (package-desc-summary desc)))))))
 
 ;;
 ;; (@* "Entry" )
@@ -132,7 +132,8 @@ Arguments COMMAND and ARG are standard arguments from `company-mode`."
   (cl-case command
     (interactive (company-begin-backend 'company-eask))
     (prefix (and (derived-mode-p 'eask-mode)
-                 (company-eask--prefix)))
+                 (company-grab-symbol)
+                 'stop))
     (candidates (company-eask--candidates))
     (annotation (company-eask--annotation arg))
     (doc-buffer (company-eask--doc-buffer arg))))
